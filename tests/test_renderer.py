@@ -152,10 +152,25 @@ class RendererTests(unittest.TestCase):
                 [entry(1, "卷王（10 AC）")], "2026", "2026-08-23T12:00:00+08:00",
                 9, 1, 1, 1, title="最卷班级",
                 column_labels=("班级", "班级 AC 总量", "班级卷王"),
+                entity_type="班级",
             )
             self.assertIn("班级 AC 总量", content)
             self.assertIn("班级卷王", content)
+            self.assertIn("共 1 个班级", content)
+            self.assertIn("每页 20 个班级", content)
+            self.assertNotIn("名选手", content)
             self.assertNotIn("通过率</div>", content)
+
+            major_content = renderer.build_page_html(
+                [entry(1, "卷王班级与同学")], "2026",
+                "2026-08-23T12:00:00+08:00", 9, 1, 1, 1,
+                title="最卷专业",
+                column_labels=("专业", "专业 AC 总量", "卷王班级与同学"),
+                entity_type="专业",
+            )
+            self.assertIn("共 1 个专业", major_content)
+            self.assertIn("每页 20 个专业", major_content)
+            self.assertNotIn("名选手", major_content)
 
 if __name__ == "__main__":
     unittest.main()

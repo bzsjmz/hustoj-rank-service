@@ -41,6 +41,7 @@ ALLOWED_GROUP_COMMANDS = frozenset(
         "随机选手",
         "日榜",
         "帮助",
+        "oj使用",
         "统计数据",
         "开发者帮助",
         "rank",

@@ -363,6 +363,7 @@ def run() -> int:
                         snapshot_id,
                         title="最卷班级",
                         column_labels=("班级", "班级 AC 总量", "班级卷王"),
+                        entity_type="班级",
                     )
                     major_intensity_manifest = major_intensity_renderer.render(
                         crawler.context,
@@ -372,6 +373,7 @@ def run() -> int:
                         snapshot_id,
                         title="最卷专业",
                         column_labels=("专业", "专业 AC 总量", "卷王班级与同学"),
+                        entity_type="专业",
                     )
                     logger.info(
                         "intensity leaderboards updated: %d classes (%d pages), "

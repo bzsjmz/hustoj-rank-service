@@ -232,6 +232,7 @@ class RankDataTests(unittest.TestCase):
         self.assertTrue(is_allowed_group_command(" /查榜 20260001 "))
         self.assertTrue(is_allowed_group_command("/RANK"))
         self.assertTrue(is_allowed_group_command("/帮助"))
+        self.assertTrue(is_allowed_group_command("/OJ使用"))
         self.assertTrue(is_allowed_group_command("/最卷班级"))
         self.assertTrue(is_allowed_group_command("/最卷专业"))
         self.assertTrue(is_allowed_group_command("/开发者帮助"))

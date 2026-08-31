@@ -7,7 +7,7 @@ from sys import maxsize
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import File, Plain
+from astrbot.api.message_components import File, Image, Node, Nodes, Plain
 from astrbot.api.star import Context, Star, register
 
 from .rank_data import (
@@ -54,6 +54,11 @@ MAJOR_IMAGE_REGISTRY_FILE = "/oj-rank-share/major-images/manifest.json"
 MAJOR_IMAGE_ROOT = "/oj-rank-share/major-images"
 MAJOR_DATA_ROOT = "/oj-rank-share/major-ranklists"
 STATISTICS_EXPORT_DIR = Path(__file__).parent / "statistics_exports"
+OJ_GUIDE_ASSET_DIR = Path(__file__).parent / "assets" / "oj_guide"
+OJ_URL = (
+    "https://webvpn.zzuli.edu.cn/http/"
+    "77726476706e69737468656265737421f1f44cd23d2a7d5c77468ca88d1b203b/"
+)
 CLASS_INTENSITY_IMAGE_MANIFEST_FILE = "/oj-rank-share/class-intensity-images/manifest.json"
 ACADEMIC_LABELS_FILE = "/oj-rank-share/academic-labels.json"
 MAJOR_INTENSITY_IMAGE_MANIFEST_FILE = "/oj-rank-share/major-intensity-images/manifest.json"
@@ -62,11 +67,14 @@ GROUP_GUARD_PRIORITY = maxsize + 100
 
 HELP_TEXT = """OJ 榜单帮助
 /榜单 [页码]：查看天梯总榜图片
+/计院榜单 [页码]：查看计算机学院榜单图片
+/软院榜单 [页码]：查看软件学院榜单图片
 /班级榜单 专业简称+班号：如 /班级榜单 示例专业01班（旧十位学号格式仍可用）
 /专业榜单 专业简称 [页码]：如 /专业榜单 示例专业（旧八位学号格式仍可用）
 /翻页 [页码]：继续查看当前榜单
 /最卷班级、/最卷专业：查看按 AC 总量排序的统计榜
 /查榜 学号或昵称：查询配置范围内的个人成绩（含历史回退）
+/OJ使用：查看电脑端和手机端 OJ 登录教程
 /随机选手：随机看看一位同学
 /帮助：查看本帮助
 
@@ -166,6 +174,101 @@ class OjRankPlugin(Star):
 
     def _load_lookup(self):
         return load_snapshot(LOOKUP_FILE)
+
+    @staticmethod
+    def _oj_guide_image(name: str) -> Image:
+        path = OJ_GUIDE_ASSET_DIR / name
+        if not path.is_file():
+            raise OSError(f"教程图片不存在：{name}")
+        return Image(file=str(path))
+
+    def _oj_guide_nodes(self, event: AstrMessageEvent) -> list[Node]:
+        sender = str(event.get_self_id() or "0")
+
+        def node(text: str, image_name: str | None = None) -> Node:
+            content = [Plain(text)]
+            if image_name:
+                content.append(self._oj_guide_image(image_name))
+            return Node(uin=sender, name="OJ 使用帮助", content=content)
+
+        return [
+            node(
+                "OJ 登录与使用指南\n\n"
+                "登录分为两步：\n"
+                "1. 先完成学校 WebVPN/CAS 身份认证；\n"
+                "2. 进入 OJ 后，再用学号和 OJ 密码登录。\n\n"
+                f"OJ 地址：\n{OJ_URL}\n\n"
+                "注意：WebVPN 登录和 OJ 登录不是同一次登录。"
+            ),
+            node(
+                "电脑端 1/4｜进入 WebVPN\n\n"
+                "打开上面的 OJ 地址，点击“CAS 统一身份认证登录”。",
+                "desktop-1-cas.png",
+            ),
+            node(
+                "电脑端 2/4｜完成学校认证\n\n"
+                "页面出现二维码后，使用手机上的“i轻工大”扫码。\n"
+                "请扫描自己页面实时生成的二维码，不要扫描教程截图中的二维码。\n"
+                "这一步登录的是学校 WebVPN，还不是 OJ 账号。",
+                "desktop-2-scan.png",
+            ),
+            node(
+                "电脑端 3/4｜打开 OJ 登录页\n\n"
+                "进入 OJ 首页后，点击右上角的“登录”。",
+                "desktop-3-oj-login.png",
+            ),
+            node(
+                "电脑端 4/4｜输入 OJ 账号和密码\n\n"
+                "用户名：你的完整学号。\n"
+                "计算机学院初始密码：身份证号后六位。\n"
+                "软件学院初始密码：姓名拼音首字母缩写 + 身份证号后六位，"
+                "例如 ABC123456。\n"
+                "字母和身份证号码中的 X 都必须大写。\n\n"
+                "首次登录后如果提示密码不符合规范，请立即设置一个自己记得住的新密码。",
+                "desktop-4-change-password.jpeg",
+            ),
+            node(
+                "手机端 1/5｜进入 WebVPN\n\n"
+                "用手机浏览器打开 OJ 地址，点击“CAS 统一身份认证登录”。",
+                "mobile-1-cas.jpeg",
+            ),
+            node(
+                "手机端 2/5｜完成学校认证\n\n"
+                "输入“i轻工大”绑定的手机号，获取验证码并登录。\n"
+                "这一步登录的是学校 WebVPN，还不是 OJ 账号。",
+                "mobile-2-school-login.png",
+            ),
+            node(
+                "手机端 3/5｜打开菜单\n\n"
+                "进入 OJ 首页后，点击右上角的三横线菜单按钮。",
+                "mobile-3-menu.png",
+            ),
+            node(
+                "手机端 4/5｜在菜单中选择登录\n\n"
+                "在展开的菜单底部点击“登录”。",
+                "mobile-4-login-entry.png",
+            ),
+            node(
+                "手机端 5/5｜登录 OJ\n\n"
+                "输入完整学号、OJ 密码和图片验证码，然后点击“登录”。\n"
+                "验证码以自己当前页面显示的内容为准。\n"
+                "初始密码规则与电脑端相同，所有字母均使用大写。",
+                "mobile-5-credentials.png",
+            ),
+            node(
+                "仍然无法登录？\n\n"
+                "请先检查：\n"
+                "1. 是否已经完成 WebVPN/CAS 认证；\n"
+                "2. 是否填写了完整学号；\n"
+                "3. 密码中的字母和 X 是否大写；\n"
+                "4. 图片验证码是否正确；\n"
+                "5. 如果以前修改过密码，是否使用了修改后的密码。\n\n"
+                "确认无误后，可以在群里询问学长，请学长帮忙排查。\n"
+                "请勿在群里发送身份证后六位、密码或验证码等隐私信息；"
+                "可以只截取报错提示说明问题。"
+            ),
+        ]
+
 
 
     @staticmethod
@@ -872,6 +975,19 @@ class OjRankPlugin(Star):
     async def help_cn(self, event: AstrMessageEvent):
         if self._allowed(event):
             yield event.plain_result(HELP_TEXT)
+
+    @filter.command("OJ使用")
+    async def oj_guide(self, event: AstrMessageEvent):
+        if not self._allowed(event):
+            yield event.plain_result("当前会话未获准查看 OJ 使用帮助。")
+            return
+        try:
+            nodes = self._oj_guide_nodes(event)
+        except OSError as exc:
+            logger.error(f"[{PLUGIN_NAME}] 读取 OJ 教程图片失败: {exc}")
+            yield event.plain_result(f"OJ 使用教程暂时无法读取：{exc}")
+            return
+        yield event.chain_result([Nodes(nodes=nodes)])
 
     @filter.command("rank")
     async def rank_alias(self, event: AstrMessageEvent, page_number: int = 1):
