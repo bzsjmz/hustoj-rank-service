@@ -48,6 +48,24 @@ ON snapshots(prefix, fetched_at);
 
 CREATE INDEX IF NOT EXISTS idx_rank_snapshots_user
 ON rank_snapshots(user_id, snapshot_id);
+
+CREATE TABLE IF NOT EXISTS student_roster (
+    prefix TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    first_seen_snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
+    last_seen_snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
+    last_seen_at TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    nickname TEXT NOT NULL,
+    accepted INTEGER NOT NULL,
+    submitted INTEGER NOT NULL,
+    ratio REAL NOT NULL,
+    level TEXT NOT NULL,
+    PRIMARY KEY (prefix, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_student_roster_prefix
+ON student_roster(prefix, user_id);
 """
 
 
@@ -66,6 +84,46 @@ class RankDatabase:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(SCHEMA)
+            roster_count = int(
+                connection.execute("SELECT COUNT(*) FROM student_roster").fetchone()[0]
+            )
+            snapshot_count = int(
+                connection.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
+            )
+            if roster_count == 0 and snapshot_count > 0:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """
+                    WITH roster_bounds AS (
+                        SELECT snapshots.prefix AS prefix,
+                               rank_snapshots.user_id AS user_id,
+                               MIN(rank_snapshots.snapshot_id) AS first_snapshot_id,
+                               MAX(rank_snapshots.snapshot_id) AS last_snapshot_id
+                        FROM rank_snapshots
+                        INNER JOIN snapshots
+                            ON snapshots.id = rank_snapshots.snapshot_id
+                        GROUP BY snapshots.prefix, rank_snapshots.user_id
+                    )
+                    INSERT INTO student_roster(
+                        prefix, user_id, first_seen_snapshot_id,
+                        last_seen_snapshot_id, last_seen_at, rank, nickname,
+                        accepted, submitted, ratio, level
+                    )
+                    SELECT roster_bounds.prefix, roster_bounds.user_id,
+                           roster_bounds.first_snapshot_id,
+                           roster_bounds.last_snapshot_id,
+                           snapshots.fetched_at, rank_snapshots.rank,
+                           rank_snapshots.nickname, rank_snapshots.accepted,
+                           rank_snapshots.submitted, rank_snapshots.ratio,
+                           rank_snapshots.level
+                    FROM roster_bounds
+                    INNER JOIN rank_snapshots
+                        ON rank_snapshots.snapshot_id = roster_bounds.last_snapshot_id
+                       AND rank_snapshots.user_id = roster_bounds.user_id
+                    INNER JOIN snapshots
+                        ON snapshots.id = roster_bounds.last_snapshot_id
+                    """
+                )
 
     def save_complete_snapshot(
         self,
@@ -122,6 +180,32 @@ class RankDatabase:
                 """,
                 [(snapshot_id, *row) for row in snapshot_rows],
             )
+            connection.executemany(
+                """
+                INSERT INTO student_roster(
+                    prefix, user_id, first_seen_snapshot_id,
+                    last_seen_snapshot_id, last_seen_at, rank, nickname,
+                    accepted, submitted, ratio, level
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(prefix, user_id) DO UPDATE SET
+                    last_seen_snapshot_id = excluded.last_seen_snapshot_id,
+                    last_seen_at = excluded.last_seen_at,
+                    rank = excluded.rank,
+                    nickname = excluded.nickname,
+                    accepted = excluded.accepted,
+                    submitted = excluded.submitted,
+                    ratio = excluded.ratio,
+                    level = excluded.level
+                """,
+                [
+                    (
+                        prefix, entry.user_id, snapshot_id, snapshot_id, fetched_at,
+                        entry.rank, entry.nickname, entry.accepted, entry.submitted,
+                        entry.ratio, entry.level,
+                    )
+                    for entry in entries
+                ],
+            )
             connection.execute("DELETE FROM current_rank WHERE prefix = ?", (prefix,))
             connection.executemany(
                 """
@@ -155,10 +239,9 @@ class RankDatabase:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT DISTINCT rank_snapshots.user_id
-                FROM rank_snapshots
-                INNER JOIN snapshots ON snapshots.id = rank_snapshots.snapshot_id
-                WHERE snapshots.prefix = ?
+                SELECT user_id
+                FROM student_roster
+                WHERE prefix = ?
                 """,
                 (prefix,),
             ).fetchall()
@@ -195,23 +278,15 @@ class RankDatabase:
                 placeholders = ",".join("?" for _ in batch)
                 rows = connection.execute(
                     f"""
-                    SELECT rank_snapshots.user_id, rank_snapshots.rank,
-                           rank_snapshots.nickname, rank_snapshots.accepted,
-                           rank_snapshots.submitted, rank_snapshots.ratio,
-                           rank_snapshots.level, snapshots.fetched_at
-                    FROM rank_snapshots
-                    INNER JOIN snapshots ON snapshots.id = rank_snapshots.snapshot_id
-                    WHERE snapshots.prefix = ?
-                      AND rank_snapshots.user_id IN ({placeholders})
-                    ORDER BY rank_snapshots.user_id ASC,
-                             snapshots.fetched_at DESC, snapshots.id DESC
+                    SELECT user_id, rank, nickname, accepted, submitted,
+                           ratio, level, last_seen_at
+                    FROM student_roster
+                    WHERE prefix = ? AND user_id IN ({placeholders})
                     """,
                     (prefix, *batch),
                 ).fetchall()
                 for row in rows:
                     user_id = str(row[0])
-                    if user_id in latest:
-                        continue
                     latest[user_id] = HistoricalRankEntry(
                         entry=RankEntry(
                             rank=int(row[1]),

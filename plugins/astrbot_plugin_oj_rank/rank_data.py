@@ -118,14 +118,25 @@ class RankImageManifest:
     page_count: int
     directory: str
     root: Path
+    pages: dict[int, str] | None = None
 
     def page_path(self, page_number: int) -> Path:
         if page_number < 1 or page_number > self.page_count:
             raise RankDataError(f"页码超出范围（1-{self.page_count}）")
-        snapshot_dir = (self.root / self.directory).resolve()
-        if snapshot_dir.parent != self.root.resolve():
-            raise RankDataError("榜单图片路径不安全")
-        image = snapshot_dir / f"page-{page_number:03d}.png"
+        if self.pages is None:
+            snapshot_dir = (self.root / self.directory).resolve()
+            if snapshot_dir.parent != self.root.resolve():
+                raise RankDataError("榜单图片路径不安全")
+            image = snapshot_dir / f"page-{page_number:03d}.png"
+        else:
+            relative = self.pages.get(page_number)
+            if relative is None:
+                raise RankDataError("该页榜单图片尚未生成")
+            image = (self.root / relative).resolve()
+            try:
+                image.relative_to(self.root.resolve())
+            except ValueError as exc:
+                raise RankDataError("榜单图片路径不安全") from exc
         if not image.is_file():
             raise RankDataError("该页榜单图片尚未生成")
         return image
@@ -270,11 +281,9 @@ def load_image_manifest(path: str | Path) -> RankImageManifest:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RankDataError("榜单图片清单暂时无法读取") from exc
 
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+    if not isinstance(payload, dict) or payload.get("schema_version") not in {1, 2}:
         raise RankDataError("榜单图片清单格式不兼容")
-    directory = str(payload.get("directory", ""))
-    if not re.fullmatch(r"snapshot-\d+", directory):
-        raise RankDataError("榜单图片目录无效")
+    schema_version = int(payload["schema_version"])
     try:
         snapshot_id = int(payload["snapshot_id"])
         user_count = int(payload["user_count"])
@@ -286,8 +295,35 @@ def load_image_manifest(path: str | Path) -> RankImageManifest:
         raise RankDataError("榜单图片清单数值无效")
     if page_count != math.ceil(user_count / page_size):
         raise RankDataError("榜单图片页数校验失败")
-    if directory != f"snapshot-{snapshot_id}":
-        raise RankDataError("榜单图片快照校验失败")
+    directory = ""
+    pages = None
+    if schema_version == 1:
+        directory = str(payload.get("directory", ""))
+        if not re.fullmatch(r"snapshot-\d+", directory):
+            raise RankDataError("榜单图片目录无效")
+        if directory != f"snapshot-{snapshot_id}":
+            raise RankDataError("榜单图片快照校验失败")
+    else:
+        raw_pages = payload.get("pages")
+        if not isinstance(raw_pages, dict):
+            raise RankDataError("榜单图片页缓存字段无效")
+        pages = {}
+        for page_text, item in raw_pages.items():
+            try:
+                page_number = int(page_text)
+            except (TypeError, ValueError) as exc:
+                raise RankDataError("榜单图片页缓存字段无效") from exc
+            if (
+                page_number < 1
+                or page_number > page_count
+                or not isinstance(item, dict)
+                or not re.fullmatch(r"[0-9a-f]{64}", str(item.get("content_hash", "")))
+            ):
+                raise RankDataError("榜单图片页缓存字段无效")
+            relative = str(item.get("file", ""))
+            if not re.fullmatch(r"pages/page-\d{3}-[0-9a-f]{16}\.png", relative):
+                raise RankDataError("榜单图片页缓存路径无效")
+            pages[page_number] = relative
 
     return RankImageManifest(
         snapshot_id=snapshot_id,
@@ -298,6 +334,7 @@ def load_image_manifest(path: str | Path) -> RankImageManifest:
         page_count=page_count,
         directory=directory,
         root=source.parent,
+        pages=pages,
     )
 
 

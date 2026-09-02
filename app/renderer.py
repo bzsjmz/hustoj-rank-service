@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import math
 import re
-import shutil
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import AbstractSet, Sequence
@@ -14,6 +15,7 @@ from .student_ids import StudentIdLayout
 
 
 class LeaderboardRenderer:
+    LAYOUT_VERSION = 2
     PAGE_SIZE = 20
     WIDTH = 1200
     HEIGHT = 1600
@@ -249,28 +251,65 @@ h1 {{ margin: 0; font-size: 52px; line-height: 1.12; letter-spacing: 3px; text-s
         historical_user_ids: AbstractSet[str] = frozenset(),
         subtitle: str | None = None,
         entity_type: str | None = None,
+        page_numbers: Sequence[int] | None = None,
     ) -> dict:
         if not entries:
             raise ValueError("refusing to render an empty leaderboard")
 
         self.root.mkdir(parents=True, exist_ok=True)
         self.root.chmod(0o755)
-        directory_name = f"snapshot-{snapshot_id}"
-        if not re.fullmatch(r"snapshot-\d+", directory_name):
-            raise ValueError("invalid snapshot image directory")
-        final_dir = self.root / directory_name
-        staging_dir = self.root / f".{directory_name}.staging"
-        if staging_dir.exists():
-            shutil.rmtree(staging_dir)
-        staging_dir.mkdir(mode=0o755)
-
         page_count = math.ceil(len(entries) / self.page_size)
-        page = browser_context.new_page()
+        requested_pages = (
+            set(range(1, page_count + 1))
+            if page_numbers is None
+            else {int(page_number) for page_number in page_numbers}
+        )
+        if not requested_pages or any(
+            page_number < 1 or page_number > page_count
+            for page_number in requested_pages
+        ):
+            raise ValueError(f"page numbers must be within 1..{page_count}")
+
+        cache_dir = self.root / "pages"
+        cache_dir.mkdir(mode=0o755, exist_ok=True)
+        existing_pages = self._load_cached_pages()
+        published_pages: dict[str, dict[str, str]] = {}
+        pending: list[tuple[int, Sequence[RankEntry], str, Path]] = []
+        for page_number in range(1, page_count + 1):
+            page_entries = entries[
+                (page_number - 1) * self.page_size : page_number * self.page_size
+            ]
+            digest = self._page_content_hash(
+                page_entries,
+                prefix,
+                page_number,
+                page_count,
+                len(entries),
+                title,
+                column_labels,
+                historical_user_ids,
+                subtitle,
+                entity_type,
+            )
+            cached = existing_pages.get(str(page_number))
+            if cached and cached.get("content_hash") == digest:
+                cached_path = self.root / str(cached.get("file", ""))
+                if cached_path.is_file() and cached_path.parent == cache_dir:
+                    published_pages[str(page_number)] = cached
+                    continue
+            if page_number in requested_pages:
+                relative_path = Path("pages") / (
+                    f"page-{page_number:03d}-{digest[:16]}.png"
+                )
+                pending.append(
+                    (page_number, page_entries, digest, self.root / relative_path)
+                )
+
+        page = browser_context.new_page() if pending else None
         try:
-            page.set_viewport_size({"width": self.WIDTH, "height": self.height})
-            for index in range(page_count):
-                page_number = index + 1
-                page_entries = entries[index * self.page_size : (index + 1) * self.page_size]
+            if page is not None:
+                page.set_viewport_size({"width": self.WIDTH, "height": self.height})
+            for page_number, page_entries, digest, image_path in pending:
                 content = self.build_page_html(
                     page_entries,
                     prefix,
@@ -307,26 +346,28 @@ h1 {{ margin: 0; font-size: 52px; line-height: 1.12; letter-spacing: 3px; text-s
                     raise RuntimeError(
                         f"leaderboard page {page_number} rows overflow the table"
                     )
-                image_path = staging_dir / f"page-{page_number:03d}.png"
+                temporary = image_path.with_suffix(".png.tmp")
                 page.screenshot(
-                    path=str(image_path),
+                    path=str(temporary),
                     type="png",
                     animations="disabled",
                 )
+                temporary.replace(image_path)
                 image_path.chmod(0o644)
+                published_pages[str(page_number)] = {
+                    "content_hash": digest,
+                    "file": str(image_path.relative_to(self.root)),
+                }
         except Exception:
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            for temporary in cache_dir.glob("*.tmp"):
+                temporary.unlink(missing_ok=True)
             raise
         finally:
-            page.close()
-
-        if final_dir.exists():
-            shutil.rmtree(final_dir)
-        staging_dir.replace(final_dir)
-        final_dir.chmod(0o755)
+            if page is not None:
+                page.close()
 
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "snapshot_id": snapshot_id,
             "fetched_at": fetched_at,
             "prefix": prefix,
@@ -336,24 +377,93 @@ h1 {{ margin: 0; font-size: 52px; line-height: 1.12; letter-spacing: 3px; text-s
             "historical_user_count": len(historical_user_ids),
             "page_size": self.page_size,
             "page_count": page_count,
-            "directory": directory_name,
+            "layout_version": self.LAYOUT_VERSION,
+            "pages": dict(
+                sorted(published_pages.items(), key=lambda item: int(item[0]))
+            ),
+            "rendered_page_count": len(pending),
+            "cached_page_count": len(published_pages) - len(pending),
         }
         self._atomic_write(
             self.root / "manifest.json",
             json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
         )
-        self._cleanup_old_snapshots(keep=2)
+        self._cleanup_page_cache(published_pages)
         return manifest
 
-    def _cleanup_old_snapshots(self, keep: int) -> None:
-        snapshots = []
-        for path in self.root.iterdir():
-            match = re.fullmatch(r"snapshot-(\d+)", path.name)
-            if path.is_dir() and match:
-                snapshots.append((int(match.group(1)), path))
-        snapshots.sort(reverse=True)
-        for _, path in snapshots[keep:]:
-            shutil.rmtree(path)
+    def _page_content_hash(
+        self,
+        entries: Sequence[RankEntry],
+        prefix: str,
+        page_number: int,
+        page_count: int,
+        total_users: int,
+        title: str,
+        column_labels: tuple[str, str, str] | None,
+        historical_user_ids: AbstractSet[str],
+        subtitle: str | None,
+        entity_type: str | None,
+    ) -> str:
+        document = {
+            "layout_version": self.LAYOUT_VERSION,
+            "width": self.WIDTH,
+            "height": self.height,
+            "page_size": self.page_size,
+            "prefix": prefix,
+            "page_number": page_number,
+            "page_count": page_count,
+            "total_users": total_users,
+            "title": title,
+            "column_labels": column_labels,
+            "historical_user_ids": sorted(historical_user_ids),
+            "subtitle": subtitle,
+            "entity_type": entity_type,
+            "entries": [asdict(entry) for entry in entries],
+        }
+        encoded = json.dumps(
+            document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _load_cached_pages(self) -> dict[str, dict[str, str]]:
+        manifest_path = self.root / "manifest.json"
+        try:
+            document = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+            return {}
+        pages = document.get("pages") if document.get("schema_version") == 2 else None
+        if not isinstance(pages, dict):
+            return {}
+        return {
+            str(page_number): page
+            for page_number, page in pages.items()
+            if isinstance(page, dict)
+        }
+
+    def _cleanup_page_cache(self, published_pages: dict[str, dict[str, str]]) -> None:
+        cache_dir = self.root / "pages"
+        referenced = {
+            str(page["file"])
+            for page in published_pages.values()
+            if isinstance(page.get("file"), str)
+        }
+        grouped: dict[str, list[Path]] = {}
+        for path in cache_dir.glob("page-*.png"):
+            match = re.match(r"(page-\d{3})-", path.name)
+            if match:
+                grouped.setdefault(match.group(1), []).append(path)
+        for paths in grouped.values():
+            unreferenced = sorted(
+                (
+                    path
+                    for path in paths
+                    if str(path.relative_to(self.root)) not in referenced
+                ),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            for path in unreferenced[1:]:
+                path.unlink(missing_ok=True)
 
 
 def publish_class_image_manifest(

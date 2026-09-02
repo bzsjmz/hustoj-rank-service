@@ -81,14 +81,52 @@ class RendererTests(unittest.TestCase):
 
             self.assertEqual(3, manifest["page_count"])
             self.assertEqual(20, manifest["page_size"])
-            image_dir = Path(directory) / "rank-images" / "snapshot-9"
+            image_dir = Path(directory) / "rank-images" / "pages"
             self.assertEqual(3, len(list(image_dir.glob("page-*.png"))))
             saved = json.loads(
                 (Path(directory) / "rank-images" / "manifest.json").read_text()
             )
             self.assertEqual(9, saved["snapshot_id"])
+            self.assertEqual(2, saved["schema_version"])
+            self.assertEqual({"1", "2", "3"}, set(saved["pages"]))
             self.assertEqual(3, context.page.evaluation_count)
             self.assertTrue(context.page.closed)
+
+    def test_reuses_unchanged_pages_without_opening_browser_page(self):
+        with tempfile.TemporaryDirectory() as directory:
+            renderer = LeaderboardRenderer(Path(directory))
+            entries = [entry(rank) for rank in range(1, 22)]
+            first = FakeContext()
+            renderer.render(
+                first, entries, "2026", "2026-08-23T12:00:00+08:00", 9
+            )
+
+            second = FakeContext()
+            manifest = renderer.render(
+                second, entries, "2026", "2026-08-23T12:05:00+08:00", 10
+            )
+
+            self.assertEqual(0, manifest["rendered_page_count"])
+            self.assertEqual(2, manifest["cached_page_count"])
+            self.assertEqual(0, second.page.evaluation_count)
+            self.assertFalse(second.page.closed)
+
+    def test_only_requested_pages_are_pre_rendered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            renderer = LeaderboardRenderer(Path(directory))
+            context = FakeContext()
+            manifest = renderer.render(
+                context,
+                [entry(rank) for rank in range(1, 141)],
+                "2026",
+                "2026-08-23T12:00:00+08:00",
+                9,
+                page_numbers=range(1, 6),
+            )
+
+            self.assertEqual(7, manifest["page_count"])
+            self.assertEqual({"1", "2", "3", "4", "5"}, set(manifest["pages"]))
+            self.assertEqual(5, context.page.evaluation_count)
 
 
     def test_renders_a_class_of_sixty_on_one_tall_page(self):

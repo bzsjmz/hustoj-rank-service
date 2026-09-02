@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import re
 from dataclasses import asdict
 from pathlib import Path
@@ -197,6 +198,7 @@ class RankExporter:
         prefix: str,
         fetched_at: str,
         scope: str,
+        snapshot_id: int = 0,
     ) -> None:
         filenames = {"w": "weekly.json", "m": "monthly.json"}
         if scope not in filenames:
@@ -205,7 +207,7 @@ class RankExporter:
         self.share_dir.chmod(0o755)
         document = {
             "schema_version": 1,
-            "snapshot_id": 0,
+            "snapshot_id": snapshot_id,
             "fetched_at": fetched_at,
             "prefix": prefix,
             "scope": scope,
@@ -316,3 +318,70 @@ class RankExporter:
         }
         content = json.dumps(document, ensure_ascii=False, separators=(",", ":"))
         self._atomic_write(directory / f"{major_id}.json", content + "\n")
+
+    def export_entity_registry(
+        self,
+        kind: str,
+        entries_by_id: dict[str, Sequence[RankEntry]],
+        layout: StudentIdLayout,
+        fetched_at: str,
+        snapshot_id: int,
+    ) -> None:
+        if kind not in {"class", "major"} or not entries_by_id:
+            raise ValueError("invalid or empty entity registry")
+        key = "classes" if kind == "class" else "majors"
+        id_key = "class_id" if kind == "class" else "major_id"
+        validator = layout.is_class_id if kind == "class" else layout.is_major_id
+        items = []
+        for entity_id, entries in sorted(entries_by_id.items()):
+            if not validator(entity_id) or not entries:
+                raise ValueError(f"invalid {kind} registry entry: {entity_id}")
+            items.append(
+                {
+                    id_key: entity_id,
+                    "user_count": len(entries),
+                    "page_count": 1 if kind == "class" else math.ceil(len(entries) / 20),
+                }
+            )
+        root = self.share_dir / f"{kind}-images"
+        root.mkdir(parents=True, exist_ok=True)
+        root.chmod(0o755)
+        document = {
+            "schema_version": 1,
+            "snapshot_id": snapshot_id,
+            "fetched_at": fetched_at,
+            "prefix": layout.prefix,
+            f"{kind}_id_length": (
+                layout.class_id_length if kind == "class" else layout.major_id_length
+            ),
+            key: items,
+        }
+        content = json.dumps(document, ensure_ascii=False, separators=(",", ":"))
+        self._atomic_write(root / "manifest.json", content + "\n")
+
+    def export_intensity(
+        self,
+        entries: Sequence[RankEntry],
+        prefix: str,
+        fetched_at: str,
+        snapshot_id: int,
+        kind: str,
+    ) -> None:
+        filenames = {
+            "class": "class-intensity.json",
+            "major": "major-intensity.json",
+        }
+        filename = filenames.get(kind)
+        if filename is None or not entries:
+            raise ValueError("invalid or empty intensity leaderboard")
+        document = {
+            "schema_version": 1,
+            "snapshot_id": snapshot_id,
+            "fetched_at": fetched_at,
+            "prefix": prefix,
+            "scope": f"{kind}-intensity",
+            "user_count": len(entries),
+            "users": [asdict(entry) for entry in entries],
+        }
+        content = json.dumps(document, ensure_ascii=False, separators=(",", ":"))
+        self._atomic_write(self.share_dir / filename, content + "\n")

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.exporter import RankExporter
 from app.models import HistoricalRankEntry, RankBaseline, RankEntry
+from app.student_ids import StudentIdLayout
 
 
 class ExporterTests(unittest.TestCase):
@@ -208,3 +209,32 @@ class ExporterTests(unittest.TestCase):
             )
             self.assertEqual("major", document["scope"])
             self.assertEqual("20260723", document["major_id"])
+
+    def test_exports_render_registries_and_intensity_data_without_images(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            share_dir = Path(directory)
+            exporter = RankExporter(share_dir)
+            layout = StudentIdLayout.conventional("2026")
+            entries = [RankEntry(1, "202607230612", "A", 3, 4, 75.0, "L1")]
+
+            exporter.export_entity_registry(
+                "class", {"2026072306": entries}, layout, "now", 7
+            )
+            exporter.export_entity_registry(
+                "major", {"20260723": entries}, layout, "now", 7
+            )
+            exporter.export_intensity(entries, "2026", "now", 7, "class")
+
+            class_registry = json.loads(
+                (share_dir / "class-images" / "manifest.json").read_text()
+            )
+            major_registry = json.loads(
+                (share_dir / "major-images" / "manifest.json").read_text()
+            )
+            intensity = json.loads(
+                (share_dir / "class-intensity.json").read_text()
+            )
+            self.assertEqual("2026072306", class_registry["classes"][0]["class_id"])
+            self.assertEqual(1, major_registry["majors"][0]["page_count"])
+            self.assertEqual("class-intensity", intensity["scope"])
+            self.assertFalse((share_dir / "class-images" / "2026072306").exists())

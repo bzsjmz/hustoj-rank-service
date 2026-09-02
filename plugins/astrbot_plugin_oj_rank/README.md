@@ -10,11 +10,12 @@
 
 `/OJ使用` 是参考部署的新生登录教程，通过 QQ 合并转发发送文字与静态截图；其他学校部署时应替换其中的 WebVPN 地址、初始密码规则和 `assets/oj_guide` 图片。
 
-建议将共享目录只读挂载：
+图片按页缓存：常用榜单只预生成前 5 页，其余页面以及周榜、月榜在收到请求时生成；相同页面的并发请求只触发一次渲染。建议将共享目录和渲染 socket 目录只读挂载：
 
 ```yaml
 volumes:
   - /path/to/hustoj-rank-service/share:/oj-rank-share:ro
+  - /path/to/hustoj-rank-service/run:/oj-rank-render:ro
 ```
 
 首次联调时白名单为空，所有会话均可查询。正式使用前可在 AstrBot 插件配置中设置 `allowed_users` 或 `allowed_groups`。

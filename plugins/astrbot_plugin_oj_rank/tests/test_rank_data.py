@@ -285,6 +285,33 @@ class RankDataTests(unittest.TestCase):
             with self.assertRaises(RankDataError):
                 load_image_manifest(self._write(directory, payload))
 
+    def test_loads_partial_v2_manifest_and_marks_missing_pages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pages = root / "pages"
+            pages.mkdir()
+            image = pages / "page-006-0123456789abcdef.png"
+            image.write_bytes(b"png")
+            payload = {
+                "schema_version": 2,
+                "snapshot_id": 8,
+                "fetched_at": "2026-08-23T10:00:00+08:00",
+                "prefix": "2026",
+                "user_count": 140,
+                "page_size": 20,
+                "page_count": 7,
+                "pages": {
+                    "6": {
+                        "content_hash": "0" * 64,
+                        "file": "pages/page-006-0123456789abcdef.png",
+                    }
+                },
+            }
+            manifest = load_image_manifest(self._write(directory, payload))
+            self.assertEqual(image, manifest.page_path(6))
+            with self.assertRaises(RankDataError):
+                manifest.page_path(5)
+
     def test_image_loader_is_a_static_method(self):
         source = (Path(__file__).parents[1] / "main.py").read_text(encoding="utf-8")
         tree = ast.parse(source)

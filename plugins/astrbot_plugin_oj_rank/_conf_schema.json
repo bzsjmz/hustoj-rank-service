@@ -17,6 +17,12 @@
     "hint": "榜单超过此时间未更新时在回复中显示延迟提示。",
     "default": 15
   },
+  "render_timeout_seconds": {
+    "description": "按需图片渲染超时（秒）",
+    "type": "int",
+    "hint": "超过该时间会自动回退为文字榜单。",
+    "default": 90
+  },
   "allowed_users": {
     "description": "允许查询的 QQ 用户",
     "type": "list",

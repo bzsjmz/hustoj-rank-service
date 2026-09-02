@@ -28,7 +28,11 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(2, database.current_count("2026"))
             with sqlite3.connect(path) as connection:
                 count = connection.execute("SELECT COUNT(*) FROM rank_snapshots").fetchone()[0]
+                roster_count = connection.execute(
+                    "SELECT COUNT(*) FROM student_roster"
+                ).fetchone()[0]
             self.assertEqual(2, count)
+            self.assertEqual(2, roster_count)
 
     def test_empty_or_duplicate_result_never_replaces_current_rank(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -143,6 +147,78 @@ class DatabaseTests(unittest.TestCase):
             latest = database.latest_entries_for_user_ids("2026", {"202600000001"})
             self.assertEqual("2026-08-23T08:00:00+08:00", latest["202600000001"].fetched_at)
             self.assertEqual(4, latest["202600000001"].entry.accepted)
+
+    def test_roster_survives_without_snapshot_row_queries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rank.db"
+            database = RankDatabase(path)
+            database.initialize()
+            database.save_complete_snapshot(
+                [RankEntry(1, "202600000001", "A", 4, 5, 80.0, "L1")],
+                "2026", "2026-08-23T08:00:00+08:00",
+            )
+            database.save_complete_snapshot(
+                [RankEntry(1, "202600000002", "B", 6, 7, 85.7, "L2")],
+                "2026", "2026-08-23T10:00:00+08:00",
+            )
+            with sqlite3.connect(path) as connection:
+                connection.execute("DELETE FROM rank_snapshots")
+
+            self.assertEqual(
+                frozenset({"202600000001", "202600000002"}),
+                database.historical_roster_user_ids("2026"),
+            )
+            latest = database.latest_entries_for_user_ids(
+                "2026", {"202600000001"}
+            )
+            self.assertEqual(4, latest["202600000001"].entry.accepted)
+
+    def test_initialize_backfills_legacy_database_only_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rank.db"
+            with sqlite3.connect(path) as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE snapshots (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        fetched_at TEXT NOT NULL, prefix TEXT NOT NULL,
+                        user_count INTEGER NOT NULL
+                    );
+                    CREATE TABLE current_rank (
+                        prefix TEXT NOT NULL, user_id TEXT NOT NULL,
+                        rank INTEGER NOT NULL, nickname TEXT NOT NULL,
+                        accepted INTEGER NOT NULL, submitted INTEGER NOT NULL,
+                        ratio REAL NOT NULL, level TEXT NOT NULL,
+                        updated_at TEXT NOT NULL, PRIMARY KEY(prefix, user_id)
+                    );
+                    CREATE TABLE rank_snapshots (
+                        snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
+                        user_id TEXT NOT NULL, rank INTEGER NOT NULL,
+                        nickname TEXT NOT NULL, accepted INTEGER NOT NULL,
+                        submitted INTEGER NOT NULL, ratio REAL NOT NULL,
+                        level TEXT NOT NULL, PRIMARY KEY(snapshot_id, user_id)
+                    );
+                    INSERT INTO snapshots VALUES
+                        (1, '2026-08-23T08:00:00+08:00', '2026', 1),
+                        (2, '2026-08-23T10:00:00+08:00', '2026', 1);
+                    INSERT INTO rank_snapshots VALUES
+                        (1, '202600000001', 1, 'old', 4, 5, 80.0, 'L1'),
+                        (2, '202600000001', 1, 'new', 8, 9, 88.9, 'L2');
+                    """
+                )
+
+            database = RankDatabase(path)
+            database.initialize()
+            database.initialize()
+            latest = database.latest_entries_for_user_ids(
+                "2026", {"202600000001"}
+            )["202600000001"]
+            self.assertEqual("new", latest.entry.nickname)
+            with sqlite3.connect(path) as connection:
+                count = connection.execute(
+                    "SELECT COUNT(*) FROM student_roster"
+                ).fetchone()[0]
+            self.assertEqual(1, count)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,16 @@ RestartSec=10
 TimeoutStopSec=90
 KillMode=mixed
 UMask=0077
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+IOAccounting=yes
+CPUAccounting=yes
+MemoryAccounting=yes
+IOWeight=50
+CPUQuota=150%
+MemoryHigh=1400M
+TasksMax=160
 
 [Install]
 WantedBy=multi-user.target

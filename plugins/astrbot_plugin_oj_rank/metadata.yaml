@@ -1,7 +1,7 @@
 name: astrbot_plugin_oj_rank
 display_name: OJ 榜单查询
 desc: 从 HUSTOJ Rank Service 的只读快照查询排行榜
-version: v1.5.0
+version: v1.6.0
 author: bzsjmz
 repo: https://github.com/bzsjmz/hustoj-rank-service
 support_platforms:

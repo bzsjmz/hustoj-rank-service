@@ -6,11 +6,12 @@ database="${OJ_DATA_DIR:-${project_root}/data}/rank.db"
 session_status="${OJ_DATA_DIR:-${project_root}/data}/webvpn-session-status.json"
 
 systemctl --no-pager --full status oj-rank.service
+systemctl --no-pager --full status oj-rank-render.service
 curl --fail --silent --show-error --output /dev/null http://127.0.0.1:6080/vnc.html
 
 if [[ -f "${database}" ]]; then
     "${project_root}/.venv/bin/python" -c \
-        'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print("current_rank:", c.execute("select count(*) from current_rank").fetchone()[0]); print("snapshots:", c.execute("select count(*) from snapshots").fetchone()[0])' \
+        'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print("current_rank:", c.execute("select count(*) from current_rank").fetchone()[0]); print("snapshots:", c.execute("select count(*) from snapshots").fetchone()[0]); print("student_roster:", c.execute("select count(*) from student_roster").fetchone()[0])' \
         "${database}"
 else
     echo "database not created yet: ${database}"

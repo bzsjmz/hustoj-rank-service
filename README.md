@@ -1,5 +1,7 @@
 # HUSTOJ Rank Service
 
+当前版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+
 一个独立部署的 HUSTOJ 排行榜采集、历史快照和统计服务，附带可选的 AstrBot 查询插件。
 
 采集器通过 Playwright persistent Chromium 使用管理员人工建立的 WebVPN 会话。它不会保存或填写账号密码，也不会破解验证码。AstrBot 只读消费 `share/` 中原子发布的 JSON、CSV 和 PNG，不接触 Cookie、浏览器 Profile 或 SQLite。
@@ -10,8 +12,9 @@
 systemd + Xvfb/noVNC
   -> persistent Chromium -> WebVPN -> HUSTOJ ranklist.php
   -> 完整性校验 -> SQLite 历史快照
-  -> 原子导出 JSON/CSV/PNG
-  -> 只读 share/ -> AstrBot 插件
+  -> 原子导出 JSON/CSV
+  -> 独立低优先级渲染服务 -> 按页缓存 PNG
+  -> 只读 share/ + Unix socket -> AstrBot 插件
 ```
 
 采集服务可以独立运行；AstrBot 只是一个可选查询前端。其他机器人或网页也可以读取相同的公开导出。
@@ -20,7 +23,7 @@ systemd + Xvfb/noVNC
 
 - 分页完整抓取，空首页、异常字段、冲突重复或达到页数上限时拒绝整轮。
 - SQLite 原子提交当前榜与不可变历史快照。
-- 从全部历史快照恢复只增不减的学生名册；当前缺失成员可用最近历史数据回退。
+- 首次从全部历史快照恢复只增不减的持久化学生名册；以后每轮只增量更新。
 - 总榜、日变化、周榜、月榜、班级榜、专业榜和图片原子发布。
 - 班级人数与参与率以历史名册为分母。
 - 学号前缀、总长度、专业段和班级段均可配置。
@@ -68,7 +71,7 @@ cp .env.example .env
 
 ```bash
 sudo ./scripts/install_systemd.sh
-sudo systemctl start oj-rank.service
+sudo systemctl start oj-rank.service oj-rank-render.service
 ```
 
 服务仅把 VNC/noVNC 绑定到回环地址。通过 SSH 隧道访问：
@@ -81,11 +84,14 @@ ssh -N -L 6080:127.0.0.1:6080 user@server
 
 ## AstrBot 插件
 
-插件位于 `plugins/astrbot_plugin_oj_rank/`。将它安装到 AstrBot 插件目录，并把采集器的 `share/` 只读挂载为容器内 `/oj-rank-share`：
+插件位于 `plugins/astrbot_plugin_oj_rank/`。渲染器只预生成常用榜单前 5 页；其他页以及周榜、月榜由插件通过 Unix socket 请求生成。同一页面的并发请求会合并成一次渲染。
+
+将插件安装到 AstrBot 插件目录，并把 `share/` 与渲染 socket 目录只读挂载：
 
 ```yaml
 volumes:
   - /path/to/hustoj-rank-service/share:/oj-rank-share:ro
+  - /path/to/hustoj-rank-service/run:/oj-rank-render:ro
 ```
 
 插件支持总榜、查榜、班级/专业榜、变化榜、统计 CSV 等命令。两院榜单是当前参考部署保留的可选扩展，依赖 `COLLEGE_SPLIT_SNAPSHOT_ID`；其他学校可以在 `app/college.py` 和插件命令中改名或移除。

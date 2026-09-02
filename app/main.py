@@ -10,8 +10,6 @@ from .college import (
     SOFTWARE_COLLEGE,
     build_class_intensity,
     build_major_intensity,
-    class_display_name,
-    major_display_name,
     merge_class_history,
     split_and_rerank_classes,
     split_and_rerank_majors,
@@ -23,11 +21,6 @@ from .database import RankDatabase
 from .exporter import RankExporter
 from .logging_config import configure_logging
 from .ranking import exclude_and_rerank, select_prefix_exclude_and_rerank
-from .renderer import (
-    LeaderboardRenderer,
-    publish_class_image_manifest,
-    publish_major_image_manifest,
-)
 
 
 def _timestamp() -> str:
@@ -42,19 +35,6 @@ def run() -> int:
     database.initialize()
     exporter = RankExporter(settings.share_dir)
     student_id_layout = settings.student_id_layout
-    renderer = LeaderboardRenderer(settings.share_dir)
-    computer_college_renderer = LeaderboardRenderer(
-        settings.share_dir, "college-images/computer"
-    )
-    software_college_renderer = LeaderboardRenderer(
-        settings.share_dir, "college-images/software"
-    )
-    class_intensity_renderer = LeaderboardRenderer(
-        settings.share_dir, "class-intensity-images"
-    )
-    major_intensity_renderer = LeaderboardRenderer(
-        settings.share_dir, "major-intensity-images"
-    )
     stop_event = threading.Event()
 
     def stop(_signum, _frame) -> None:
@@ -166,24 +146,6 @@ def run() -> int:
                     )
 
                 try:
-                    manifest = renderer.render(
-                        crawler.context,
-                        entries,
-                        settings.prefix,
-                        fetched_at,
-                        snapshot_id,
-                    )
-                    logger.info(
-                        "leaderboard images updated, %d pages, snapshot_id=%d",
-                        manifest["page_count"],
-                        snapshot_id,
-                    )
-                except Exception:
-                    logger.exception(
-                        "leaderboard image render failed; previous images retained"
-                    )
-
-                try:
                     computer_user_ids = database.snapshot_user_ids(
                         settings.college_split_snapshot_id, settings.prefix
                     )
@@ -206,35 +168,16 @@ def run() -> int:
                         SOFTWARE_COLLEGE,
                         settings.college_split_snapshot_id,
                     )
-                    computer_manifest = computer_college_renderer.render(
-                        crawler.context,
-                        computer_entries,
-                        settings.prefix,
-                        fetched_at,
-                        snapshot_id,
-                        title="计院榜单",
-                    )
-                    software_manifest = software_college_renderer.render(
-                        crawler.context,
-                        software_entries,
-                        settings.prefix,
-                        fetched_at,
-                        snapshot_id,
-                        title="软院榜单",
-                    )
                     logger.info(
-                        "college leaderboards updated: %d computer users (%d pages), "
-                        "%d software users (%d pages), split_snapshot_id=%d",
+                        "college leaderboard data updated: %d computer users, "
+                        "%d software users, split_snapshot_id=%d",
                         len(computer_entries),
-                        computer_manifest["page_count"],
                         len(software_entries),
-                        software_manifest["page_count"],
                         settings.college_split_snapshot_id,
                     )
                 except Exception:
                     logger.exception(
-                        "college leaderboard export/render failed; previous college "
-                        "outputs retained"
+                        "college leaderboard export failed; previous outputs retained"
                     )
 
                 try:
@@ -257,55 +200,21 @@ def run() -> int:
                             student_id_layout,
                         )
 
-                    class_manifests = {}
-                    for class_id, class_entries in class_ranklists.items():
-                        historical_user_ids = class_historical_user_ids.get(
-                            class_id, frozenset()
-                        )
-                        class_renderer = LeaderboardRenderer(
-                            settings.share_dir,
-                            f"class-images/{class_id}",
-                            page_size=60,
-                            height=LeaderboardRenderer.class_image_height(
-                                len(class_entries), bool(historical_user_ids)
-                            ),
-                        )
-                        manifest = class_renderer.render(
-                            crawler.context,
-                            class_entries,
-                            settings.prefix,
-                            fetched_at,
-                            snapshot_id,
-                            title=f"{class_display_name(class_id, student_id_layout)}榜单",
-                            historical_user_ids=historical_user_ids,
-                            subtitle=(
-                                f"当前 ranklist {len(class_entries) - len(historical_user_ids)} 人"
-                                f"｜历史补全 {len(historical_user_ids)} 人"
-                                f"｜共 {len(class_entries)} 名选手"
-                            ),
-                        )
-                        if manifest["page_count"] != 1:
-                            raise RuntimeError(
-                                f"class leaderboard was not rendered as one page: {class_id}"
-                            )
-                        class_manifests[class_id] = manifest
-                    publish_class_image_manifest(
-                        settings.share_dir,
-                        snapshot_id,
-                        fetched_at,
-                        settings.prefix,
-                        class_manifests,
+                    exporter.export_entity_registry(
+                        "class",
+                        class_ranklists,
                         student_id_layout,
+                        fetched_at,
+                        snapshot_id,
                     )
                     logger.info(
-                        "class leaderboards updated: %d classes, %d users, %d images",
+                        "class leaderboard data updated: %d classes, %d users",
                         len(class_ranklists),
                         sum(len(class_entries) for class_entries in class_ranklists.values()),
-                        len(class_manifests),
                     )
                 except Exception:
                     logger.exception(
-                        "class leaderboard export/render failed; previous class outputs retained"
+                        "class leaderboard export failed; previous outputs retained"
                     )
 
                 try:
@@ -320,72 +229,48 @@ def run() -> int:
                             student_id_layout,
                         )
 
-                    major_manifests = {}
-                    for major_id, major_entries in major_ranklists.items():
-                        major_renderer = LeaderboardRenderer(
-                            settings.share_dir, f"major-images/{major_id}"
-                        )
-                        major_manifests[major_id] = major_renderer.render(
-                            crawler.context,
-                            major_entries,
-                            settings.prefix,
-                            fetched_at,
-                            snapshot_id,
-                            title=f"{major_display_name(major_id, student_id_layout)}专业榜单",
-                        )
-                    publish_major_image_manifest(
-                        settings.share_dir,
-                        snapshot_id,
-                        fetched_at,
-                        settings.prefix,
-                        major_manifests,
+                    exporter.export_entity_registry(
+                        "major",
+                        major_ranklists,
                         student_id_layout,
+                        fetched_at,
+                        snapshot_id,
                     )
                     logger.info(
-                        "major leaderboards updated: %d majors, %d users, %d pages",
+                        "major leaderboard data updated: %d majors, %d users",
                         len(major_ranklists),
                         sum(len(major_entries) for major_entries in major_ranklists.values()),
-                        sum(manifest["page_count"] for manifest in major_manifests.values()),
                     )
                 except Exception:
                     logger.exception(
-                        "major leaderboard export/render failed; previous major outputs retained"
+                        "major leaderboard export failed; previous outputs retained"
                     )
 
                 try:
                     class_intensity = build_class_intensity(entries, student_id_layout)
                     major_intensity = build_major_intensity(entries, student_id_layout)
-                    class_intensity_manifest = class_intensity_renderer.render(
-                        crawler.context,
+                    exporter.export_intensity(
                         class_intensity,
                         settings.prefix,
                         fetched_at,
                         snapshot_id,
-                        title="最卷班级",
-                        column_labels=("班级", "班级 AC 总量", "班级卷王"),
-                        entity_type="班级",
+                        "class",
                     )
-                    major_intensity_manifest = major_intensity_renderer.render(
-                        crawler.context,
+                    exporter.export_intensity(
                         major_intensity,
                         settings.prefix,
                         fetched_at,
                         snapshot_id,
-                        title="最卷专业",
-                        column_labels=("专业", "专业 AC 总量", "卷王班级与同学"),
-                        entity_type="专业",
+                        "major",
                     )
                     logger.info(
-                        "intensity leaderboards updated: %d classes (%d pages), "
-                        "%d majors (%d pages)",
+                        "intensity leaderboard data updated: %d classes, %d majors",
                         len(class_intensity),
-                        class_intensity_manifest["page_count"],
                         len(major_intensity),
-                        major_intensity_manifest["page_count"],
                     )
                 except Exception:
                     logger.exception(
-                        "intensity leaderboard render failed; previous outputs retained"
+                        "intensity leaderboard export failed; previous outputs retained"
                     )
 
                 for scope, label in (("w", "weekly"), ("m", "monthly")):
@@ -401,6 +286,7 @@ def run() -> int:
                             settings.prefix,
                             fetched_at,
                             scope,
+                            snapshot_id,
                         )
                         logger.info(
                             "%s bot share export updated, %d users",

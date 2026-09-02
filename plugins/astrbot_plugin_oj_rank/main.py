@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import math
 from pathlib import Path
 import secrets
@@ -38,6 +40,11 @@ LOOKUP_FILE = "/oj-rank-share/lookup.json"
 DAILY_FILE = "/oj-rank-share/daily.json"
 WEEKLY_FILE = "/oj-rank-share/weekly.json"
 MONTHLY_FILE = "/oj-rank-share/monthly.json"
+WEEKLY_IMAGE_MANIFEST_FILE = "/oj-rank-share/weekly-images/manifest.json"
+MONTHLY_IMAGE_MANIFEST_FILE = "/oj-rank-share/monthly-images/manifest.json"
+CLASS_INTENSITY_FILE = "/oj-rank-share/class-intensity.json"
+MAJOR_INTENSITY_FILE = "/oj-rank-share/major-intensity.json"
+RENDER_SOCKET = "/oj-rank-render/render.sock"
 IMAGE_MANIFEST_FILE = "/oj-rank-share/rank-images/manifest.json"
 COMPUTER_COLLEGE_FILE = "/oj-rank-share/computer-college.json"
 SOFTWARE_COLLEGE_FILE = "/oj-rank-share/software-college.json"
@@ -84,8 +91,8 @@ DEVELOPER_HELP_TEXT = """开发者帮助
 以下命令不会显示在普通 /帮助 中，但仍可直接调用。
 
 周期榜
-/周榜 [人数]：本周 OJ 排名
-/月榜 [人数]：本月 OJ 排名
+/周榜 [页码]：本周 OJ 排名图片
+/月榜 [页码]：本月 OJ 排名图片
 
 今日数据
 /变化 [学号或昵称]：今日整体或个人进展
@@ -107,14 +114,16 @@ DEVELOPER_HELP_TEXT = """开发者帮助
     PLUGIN_NAME,
     "bzsjmz",
     "HUSTOJ 榜单只读查询",
-    "1.5.0",
+    "1.6.0",
     "https://github.com/bzsjmz/hustoj-rank-service",
 )
 class OjRankPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
-        self._last_views: dict[str, tuple[str, str | None, str, int]] = {}
+        self._last_views: dict[
+            str, tuple[str, str | None, str, int, str | None, str | None]
+        ] = {}
 
     async def initialize(self):
         logger.info(f"[{PLUGIN_NAME}] 已初始化，只读数据源: {DATA_FILE}")
@@ -324,28 +333,98 @@ class OjRankPlugin(Star):
         manifest_file: str = IMAGE_MANIFEST_FILE,
         snapshot_file: str | None = DATA_FILE,
         title: str = "榜单",
+        render_board: str | None = None,
+        render_entity: str | None = None,
     ):
         try:
             manifest = self._load_images(manifest_file)
+            if snapshot_file is not None:
+                source_snapshot = self._load_scoped(snapshot_file)
+                if manifest.snapshot_id != source_snapshot.snapshot_id:
+                    raise RankDataError("图片尚未同步至最新快照")
             image_path = manifest.page_path(page_number)
         except RankDataError as exc:
             logger.warning(f"[{PLUGIN_NAME}] 读取{title}图片失败: {exc}")
-            if snapshot_file is None:
-                yield event.plain_result(f"暂时无法查询{title}：{exc}")
+            render_error = str(exc)
+            if render_board is not None:
+                try:
+                    image_path = await self._request_render(
+                        render_board, render_entity, page_number
+                    )
+                except (OSError, RankDataError, asyncio.TimeoutError) as render_exc:
+                    render_error = str(render_exc)
+                    logger.warning(
+                        f"[{PLUGIN_NAME}] 按需渲染{title}失败: {render_exc}"
+                    )
+                else:
+                    exc = None
+            if exc is not None:
+                if snapshot_file is None:
+                    yield event.plain_result(f"暂时无法查询{title}：{render_error}")
+                    return
+                async for result in self._leaderboard_text(
+                    event,
+                    page_number,
+                    snapshot_file=snapshot_file,
+                    title=title,
+                    prefix=f"图片暂不可用（{render_error}），已切换文字榜单\n",
+                ):
+                    yield result
                 return
-            async for result in self._leaderboard_text(
-                event,
-                page_number,
-                snapshot_file=snapshot_file,
-                title=title,
-                prefix=f"图片暂不可用（{exc}），已切换文字榜单\n",
-            ):
-                yield result
-            return
         self._last_views[self._page_key(event)] = (
-            manifest_file, snapshot_file, title, page_number
+            manifest_file, snapshot_file, title, page_number,
+            render_board, render_entity,
         )
         yield event.image_result(str(image_path))
+
+    async def _request_render(
+        self, board: str, entity: str | None, page_number: int
+    ) -> Path:
+        try:
+            timeout = max(5.0, float(self.config.get("render_timeout_seconds", 90)))
+        except (TypeError, ValueError):
+            timeout = 90.0
+
+        async def request() -> dict:
+            reader, writer = await asyncio.open_unix_connection(RENDER_SOCKET)
+            try:
+                message = {
+                    "board": board,
+                    "entity": entity,
+                    "page": page_number,
+                }
+                writer.write(
+                    (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
+                )
+                await writer.drain()
+                raw = await reader.readline()
+                if not raw or len(raw) > 8192:
+                    raise RankDataError("渲染服务响应无效")
+                payload = json.loads(raw.decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise RankDataError("渲染服务响应无效")
+                return payload
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        try:
+            response = await asyncio.wait_for(request(), timeout=timeout)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise RankDataError("渲染服务响应无效") from exc
+        if not response.get("ok"):
+            raise RankDataError(str(response.get("error") or "图片渲染失败"))
+        relative = Path(str(response.get("relative_path", "")))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise RankDataError("渲染服务返回了不安全路径")
+        image = (Path("/oj-rank-share") / relative).resolve()
+        try:
+            image.relative_to(Path("/oj-rank-share").resolve())
+        except ValueError as exc:
+            raise RankDataError("渲染服务返回了不安全路径") from exc
+        if not image.is_file():
+            raise RankDataError("渲染图片尚未发布")
+        return image
 
     async def _leaderboard_text(
         self,
@@ -359,6 +438,9 @@ class OjRankPlugin(Star):
             snapshot = self._load_scoped(snapshot_file)
         except RankDataError as exc:
             yield event.plain_result(f"暂时无法查询{title}：{exc}")
+            return
+        if not snapshot.users:
+            yield event.plain_result(f"{snapshot.prefix} {title}目前还没有数据。")
             return
         page_size = 20
         page_count = math.ceil(snapshot.user_count / page_size)
@@ -387,7 +469,9 @@ class OjRankPlugin(Star):
         if page_number < 1:
             yield event.plain_result("页码必须从 1 开始，例如：/榜单 2")
             return
-        async for result in self._leaderboard_image(event, page_number):
+        async for result in self._leaderboard_image(
+            event, page_number, render_board="total"
+        ):
             yield result
 
     @filter.command("翻页")
@@ -396,11 +480,13 @@ class OjRankPlugin(Star):
             yield event.plain_result("当前会话未获准查询榜单。")
             return
         view = self._last_views.get(self._page_key(event))
-        manifest_file, snapshot_file, title, previous = view or (
+        manifest_file, snapshot_file, title, previous, render_board, render_entity = view or (
             IMAGE_MANIFEST_FILE,
             DATA_FILE,
             "榜单",
             0,
+            "total",
+            None,
         )
         if page_number <= 0:
             try:
@@ -412,7 +498,8 @@ class OjRankPlugin(Star):
             if page_number > manifest.page_count:
                 page_number = 1
         async for result in self._leaderboard_image(
-            event, page_number, manifest_file, snapshot_file, title
+            event, page_number, manifest_file, snapshot_file, title,
+            render_board, render_entity,
         ):
             yield result
 
@@ -432,6 +519,7 @@ class OjRankPlugin(Star):
             COMPUTER_COLLEGE_IMAGE_MANIFEST_FILE,
             COMPUTER_COLLEGE_FILE,
             "计院榜单",
+            "computer",
         ):
             yield result
 
@@ -451,6 +539,7 @@ class OjRankPlugin(Star):
             SOFTWARE_COLLEGE_IMAGE_MANIFEST_FILE,
             SOFTWARE_COLLEGE_FILE,
             "软院榜单",
+            "software",
         ):
             yield result
 
@@ -460,7 +549,8 @@ class OjRankPlugin(Star):
             yield event.plain_result("当前会话未获准查询榜单。")
             return
         async for result in self._leaderboard_image(
-            event, 1, CLASS_INTENSITY_IMAGE_MANIFEST_FILE, None, "最卷班级"
+            event, 1, CLASS_INTENSITY_IMAGE_MANIFEST_FILE,
+            CLASS_INTENSITY_FILE, "最卷班级", "class-intensity"
         ):
             yield result
 
@@ -470,7 +560,8 @@ class OjRankPlugin(Star):
             yield event.plain_result("当前会话未获准查询榜单。")
             return
         async for result in self._leaderboard_image(
-            event, 1, MAJOR_INTENSITY_IMAGE_MANIFEST_FILE, None, "最卷专业"
+            event, 1, MAJOR_INTENSITY_IMAGE_MANIFEST_FILE,
+            MAJOR_INTENSITY_FILE, "最卷专业", "major-intensity"
         ):
             yield result
 
@@ -507,7 +598,8 @@ class OjRankPlugin(Star):
         title = labels.major_name(major_id)
         async for result in self._leaderboard_image(
             event, page_number, f"{MAJOR_IMAGE_ROOT}/{major_id}/manifest.json",
-            f"{MAJOR_DATA_ROOT}/{major_id}.json", f"{title}专业榜单"
+            f"{MAJOR_DATA_ROOT}/{major_id}.json", f"{title}专业榜单",
+            "major", major_id,
         ):
             yield result
 
@@ -552,7 +644,8 @@ class OjRankPlugin(Star):
         title = labels.class_name(class_id)
         async for result in self._leaderboard_image(
             event, 1, f"{CLASS_IMAGE_ROOT}/{class_id}/manifest.json",
-            f"{CLASS_DATA_ROOT}/{class_id}.json", f"{title}榜单"
+            f"{CLASS_DATA_ROOT}/{class_id}.json", f"{title}榜单",
+            "class", class_id,
         ):
             yield result
 
@@ -810,16 +903,38 @@ class OjRankPlugin(Star):
         yield event.plain_result("\n".join([header, *rows]))
 
     @filter.command("周榜")
-    async def weekly(self, event: AstrMessageEvent, limit: int = 0):
-        async for result in self._scoped_leaderboard(
-            event, WEEKLY_FILE, "本周 OJ 排名", limit
+    async def weekly(self, event: AstrMessageEvent, page_number: int = 1):
+        if not self._allowed(event):
+            yield event.plain_result("当前会话未获准查询榜单。")
+            return
+        if page_number < 1:
+            yield event.plain_result("页码必须从 1 开始，例如：/周榜 2")
+            return
+        async for result in self._leaderboard_image(
+            event,
+            page_number,
+            WEEKLY_IMAGE_MANIFEST_FILE,
+            WEEKLY_FILE,
+            "本周 OJ 排名",
+            "weekly",
         ):
             yield result
 
     @filter.command("月榜")
-    async def monthly(self, event: AstrMessageEvent, limit: int = 0):
-        async for result in self._scoped_leaderboard(
-            event, MONTHLY_FILE, "本月 OJ 排名", limit
+    async def monthly(self, event: AstrMessageEvent, page_number: int = 1):
+        if not self._allowed(event):
+            yield event.plain_result("当前会话未获准查询榜单。")
+            return
+        if page_number < 1:
+            yield event.plain_result("页码必须从 1 开始，例如：/月榜 2")
+            return
+        async for result in self._leaderboard_image(
+            event,
+            page_number,
+            MONTHLY_IMAGE_MANIFEST_FILE,
+            MONTHLY_FILE,
+            "本月 OJ 排名",
+            "monthly",
         ):
             yield result
 
