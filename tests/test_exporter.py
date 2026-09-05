@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime
 
 import csv
 import json
@@ -78,6 +79,45 @@ class ExporterTests(unittest.TestCase):
             self.assertEqual(2, document["user_count"])
             self.assertTrue(document["users"][1]["is_historical"])
             self.assertEqual("2026-08-23T08:00:00+08:00", document["users"][1]["last_seen_at"])
+
+    def test_loads_cached_lookup_rows_without_historical_fallbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            exporter = RankExporter(Path(directory))
+            exporter.export_lookup(
+                [RankEntry(1, "202300000001", "23级", 3, 4, 75.0, "L1")],
+                "2026-08-23T10:00:00+08:00",
+                7,
+                ("2023", "2024", "2025", "2026"),
+                [
+                    HistoricalRankEntry(
+                        RankEntry(8, "202600000001", "历史", 2, 3, 66.7, "L1"),
+                        "2026-08-23T08:00:00+08:00",
+                    )
+                ],
+                {"2023": "2026-08-23T09:00:00+08:00"},
+            )
+            cached, timestamps = exporter.load_lookup_current_entries(
+                ("2023", "2024", "2025", "2026")
+            )
+            self.assertEqual(["202300000001"], [entry.user_id for entry in cached["2023"]])
+            self.assertEqual([], cached["2026"])
+            self.assertEqual("2026-08-23T09:00:00+08:00", timestamps["2023"])
+
+    def test_daily_lookup_schedule_is_staggered_and_single_flight(self) -> None:
+        from app.main import _due_lookup_prefixes
+
+        prefixes = ("5423", "5424", "5425", "5426")
+        now = datetime.fromisoformat("2026-09-04T01:25:00+08:00")
+        self.assertEqual(("5423",), _due_lookup_prefixes(prefixes, "5426", {}, now))
+        self.assertEqual(
+            ("5424",),
+            _due_lookup_prefixes(
+                prefixes,
+                "5426",
+                {"5423": "2026-09-04T00:25:00+08:00"},
+                now,
+            ),
+        )
 
     def test_exports_academic_labels_for_read_only_bot_use(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

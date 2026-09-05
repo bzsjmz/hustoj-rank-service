@@ -84,7 +84,7 @@ ssh -N -L 6080:127.0.0.1:6080 user@server
 
 ## AstrBot 插件
 
-插件位于 `plugins/astrbot_plugin_oj_rank/`。渲染器只预生成常用榜单前 5 页；其他页以及周榜、月榜由插件通过 Unix socket 请求生成。同一页面的并发请求会合并成一次渲染。
+插件位于 `plugins/astrbot_plugin_oj_rank/`。渲染器只预生成常用榜单前 3 页；其他页以及周榜、月榜由插件通过 Unix socket 请求生成。同一页面的并发请求会合并成一次渲染。
 
 将插件安装到 AstrBot 插件目录，并把 `share/` 与渲染 socket 目录只读挂载：
 

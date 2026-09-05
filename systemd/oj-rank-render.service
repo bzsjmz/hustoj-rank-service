@@ -6,6 +6,7 @@ After=local-fs.target
 Type=simple
 WorkingDirectory=__PROJECT_ROOT__
 Environment=PYTHONUNBUFFERED=1
+Environment=PRE_RENDER_PAGES=3
 Environment=PLAYWRIGHT_BROWSERS_PATH=__PROJECT_ROOT__/data/ms-playwright
 EnvironmentFile=-__PROJECT_ROOT__/.env
 ExecStart=__PROJECT_ROOT__/.venv/bin/python -m app.render_service
@@ -15,6 +16,8 @@ TimeoutStopSec=30
 KillMode=mixed
 UMask=0022
 Nice=10
+IOReadBandwidthMax=/dev/vda 8M
+IOWriteBandwidthMax=/dev/vda 3M
 IOSchedulingClass=idle
 IOAccounting=yes
 CPUAccounting=yes

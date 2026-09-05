@@ -95,7 +95,7 @@ class OnDemandRenderer:
         self.browser_context = browser_context
         self.logger = logger
         self.layout = settings.student_id_layout
-        self.pre_render_pages = max(1, int(os.getenv("PRE_RENDER_PAGES", "5")))
+        self.pre_render_pages = max(1, int(os.getenv("PRE_RENDER_PAGES", "3")))
 
     def definition(self, board: str, entity: str | None = None) -> BoardDefinition:
         share = self.settings.share_dir

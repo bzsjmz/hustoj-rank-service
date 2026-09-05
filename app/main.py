@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import signal
 import threading
-from datetime import datetime
+from datetime import datetime, time
 
 from .college import (
     COMPUTER_COLLEGE,
@@ -23,8 +23,29 @@ from .logging_config import configure_logging
 from .ranking import exclude_and_rerank, select_prefix_exclude_and_rerank
 
 
+LOOKUP_REFRESH_START = time(0, 20)
+
+
 def _timestamp() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _due_lookup_prefixes(
+    prefixes: tuple[str, ...], prefix: str, prefix_fetched_at: dict[str, str], now: datetime
+) -> tuple[str, ...]:
+    """Return at most one due cohort, so extra full crawls never overlap."""
+    local_now = now.astimezone()
+    today = local_now.date().isoformat()
+    for schedule_index, lookup_prefix in enumerate(
+        item for item in prefixes if item != prefix
+    ):
+        scheduled_at = time(LOOKUP_REFRESH_START.hour + schedule_index, 20)
+        if local_now.time() < scheduled_at:
+            continue
+        previous = prefix_fetched_at.get(lookup_prefix, "")
+        if not previous.startswith(today):
+            return (lookup_prefix,)
+    return ()
 
 
 def run() -> int:
@@ -121,17 +142,36 @@ def run() -> int:
                         "bot share export failed; SQLite snapshot remains committed"
                     )
                 try:
+                    cached_lookup_entries, prefix_fetched_at = (
+                        exporter.load_lookup_current_entries(settings.lookup_prefixes)
+                    )
+                    for lookup_prefix in _due_lookup_prefixes(
+                        settings.lookup_prefixes,
+                        settings.prefix,
+                        prefix_fetched_at,
+                        datetime.now().astimezone(),
+                    ):
+                        logger.info(
+                            "starting scheduled lookup refresh for prefix=%s", lookup_prefix
+                        )
+                        cached_lookup_entries[lookup_prefix] = crawler.scrape_all(
+                            prefix=lookup_prefix
+                        )
+                        prefix_fetched_at[lookup_prefix] = fetched_at
+                    prefix_fetched_at[settings.prefix] = fetched_at
                     lookup_entries = list(entries)
                     for lookup_prefix in settings.lookup_prefixes:
-                        if lookup_prefix == settings.prefix:
-                            continue
-                        lookup_entries.extend(crawler.scrape_all(prefix=lookup_prefix))
+                        if lookup_prefix != settings.prefix:
+                            lookup_entries.extend(
+                                cached_lookup_entries.get(lookup_prefix, ())
+                            )
                     exporter.export_lookup(
                         lookup_entries,
                         fetched_at,
                         snapshot_id,
                         settings.lookup_prefixes,
                         tuple(missing_historical_entries.values()),
+                        prefix_fetched_at,
                     )
                     logger.info(
                         "lookup export updated: %d current rows, %d historical fallbacks",

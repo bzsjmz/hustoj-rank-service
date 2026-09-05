@@ -7,7 +7,7 @@ import math
 import re
 from dataclasses import asdict
 from pathlib import Path
-from typing import AbstractSet, Sequence
+from typing import AbstractSet, Mapping, Sequence
 
 from .college import MAJOR_DISPLAY_NAMES
 from .student_ids import StudentIdLayout
@@ -148,6 +148,7 @@ class RankExporter:
         snapshot_id: int,
         prefixes: Sequence[str],
         historical_entries: Sequence[HistoricalRankEntry] = (),
+        prefix_fetched_at: Mapping[str, str] | None = None,
     ) -> None:
         """Publish current multi-cohort rows plus marked historical fallbacks."""
         if not entries:
@@ -186,11 +187,67 @@ class RankExporter:
             "fetched_at": fetched_at,
             "prefix": "-".join(prefixes),
             "lookup_prefixes": list(prefixes),
+            "prefix_fetched_at": {
+                prefix: (prefix_fetched_at or {}).get(prefix, fetched_at)
+                for prefix in prefixes
+            },
             "user_count": len(users),
             "users": users,
         }
         content = json.dumps(document, ensure_ascii=False, separators=(",", ":"))
         self._atomic_write(self.share_dir / "lookup.json", content + "\n")
+
+    def load_lookup_current_entries(
+        self, prefixes: Sequence[str]
+    ) -> tuple[dict[str, list[RankEntry]], dict[str, str]]:
+        """Load cached current rows while excluding historical fallbacks."""
+        cached_entries = {prefix: [] for prefix in prefixes}
+        prefix_fetched_at: dict[str, str] = {}
+        path = self.share_dir / "lookup.json"
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+            return cached_entries, prefix_fetched_at
+        if not isinstance(document, dict) or document.get("schema_version") != 1:
+            return cached_entries, prefix_fetched_at
+
+        raw_times = document.get("prefix_fetched_at")
+        fallback_time = document.get("fetched_at")
+        if isinstance(raw_times, dict):
+            for prefix in prefixes:
+                value = raw_times.get(prefix)
+                if isinstance(value, str) and value:
+                    prefix_fetched_at[prefix] = value
+        if isinstance(fallback_time, str) and fallback_time:
+            for prefix in prefixes:
+                prefix_fetched_at.setdefault(prefix, fallback_time)
+
+        users = document.get("users")
+        if not isinstance(users, list):
+            return cached_entries, prefix_fetched_at
+        seen_user_ids: set[str] = set()
+        for row in users:
+            if not isinstance(row, dict) or row.get("is_historical"):
+                continue
+            user_id = str(row.get("user_id", ""))
+            prefix = next((item for item in prefixes if user_id.startswith(item)), None)
+            if prefix is None or user_id in seen_user_ids:
+                continue
+            try:
+                entry = RankEntry(
+                    rank=int(row["rank"]),
+                    user_id=user_id,
+                    nickname=str(row.get("nickname", "")),
+                    accepted=int(row["accepted"]),
+                    submitted=int(row["submitted"]),
+                    ratio=float(row["ratio"]),
+                    level=str(row.get("level", "")),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            seen_user_ids.add(user_id)
+            cached_entries[prefix].append(entry)
+        return cached_entries, prefix_fetched_at
 
     def export_scoped(
         self,
